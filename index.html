@@ -83,7 +83,24 @@ button.primary:hover{border-color:var(--blue);}
     <div class="speed-wrap">
       <div class="speed-readout" id="speedReadout"><span class="muted">—</span><span class="unit">Mbps</span></div>
       <div class="speed-bar"><div class="speed-fill" id="speedFill"></div></div>
-      <div class="speed-sub" id="speedDetail">queued · 2 MB blob over HTTPS to the Vercel server</div>
+      <div class="speed-sub" id="speedDetail">queued · 2 parallel 4 MB streams over HTTPS</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">upload speed test</span><span class="sec-sub" id="uploadSub"></span></div>
+    <div class="speed-wrap">
+      <div class="speed-readout" id="uploadReadout"><span class="muted">—</span><span class="unit">Mbps</span></div>
+      <div class="speed-bar"><div class="speed-fill" id="uploadFill"></div></div>
+      <div class="speed-sub" id="uploadDetail">queued · 2 MB random body POSTed to /api/echo</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">latency · ping</span><span class="sec-sub" id="pingSub"></span></div>
+    <div class="speed-wrap">
+      <div class="speed-readout" id="pingReadout"><span class="muted">—</span><span class="unit">ms</span></div>
+      <div class="speed-sub" id="pingDetail">queued · 10 small round-trips, median + jitter</div>
     </div>
   </div>
 
@@ -151,7 +168,7 @@ function escapeHtml(s) {
 }
 
 // ─── DATA COLLECTION ──────────────────────────────────────────────────────────
-let collected = { network: {}, system: {}, speed: null };
+let collected = { network: {}, system: {}, speed: null, upload: null, ping: null };
 
 async function fetchIp() {
   document.getElementById('networkSub').innerHTML = '<span class="spinner"></span> looking up...';
@@ -196,7 +213,7 @@ function detectSystem() {
   };
 }
 
-// ─── SPEED TEST ───────────────────────────────────────────────────────────────
+// ─── DOWNLOAD SPEED TEST (2 parallel streams, 8 MB total) ─────────────────────
 async function runSpeedTest() {
   const fill = document.getElementById('speedFill');
   const readout = document.getElementById('speedReadout');
@@ -207,37 +224,43 @@ async function runSpeedTest() {
   sub.innerHTML = '<span class="spinner"></span> downloading';
   fill.style.width = '0%';
 
-  const SIZE = 2 * 1024 * 1024;
-  const url = `/api/speedblob?sz=${SIZE}&_=${Date.now()}`;
-  const samples = [];
+  const STREAM_SIZE = 4 * 1024 * 1024; // 4 MB per stream
+  const STREAMS = 2;
+  const TOTAL = STREAM_SIZE * STREAMS;
 
   try {
-    // Two passes — first warms up TCP/CDN, second is the measurement.
-    for (let pass = 0; pass < 2; pass++) {
-      const t0 = performance.now();
-      const r = await fetch(url, { cache: 'no-store' });
-      const reader = r.body.getReader();
-      let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        received += value.length;
-        const pct = Math.min(95, (received / SIZE) * 95);
-        if (pass === 1) fill.style.width = pct + '%';
-      }
-      const t1 = performance.now();
-      const seconds = (t1 - t0) / 1000;
-      const mbps = (received * 8) / 1_000_000 / seconds;
-      samples.push({ seconds, mbps, bytes: received });
-      if (pass === 1) fill.style.width = '100%';
-    }
+    // Warm-up: tiny fetch so the cold-start latency doesn't pollute the measurement.
+    await fetch(`/api/speedblob?sz=${256 * 1024}&_=${Date.now()}-w`, { cache: 'no-store' })
+      .then(r => r.arrayBuffer())
+      .catch(() => {});
 
-    const final = samples[1]; // ignore warm-up sample
-    const mbps = final.mbps;
+    let totalReceived = 0;
+    const t0 = performance.now();
+    const streamPromises = [];
+    for (let s = 0; s < STREAMS; s++) {
+      const url = `/api/speedblob?sz=${STREAM_SIZE}&_=${Date.now()}-s${s}`;
+      streamPromises.push((async () => {
+        const r = await fetch(url, { cache: 'no-store' });
+        const reader = r.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalReceived += value.length;
+          const pct = Math.min(95, (totalReceived / TOTAL) * 95);
+          fill.style.width = pct + '%';
+        }
+      })());
+    }
+    await Promise.all(streamPromises);
+    const t1 = performance.now();
+    fill.style.width = '100%';
+
+    const seconds = (t1 - t0) / 1000;
+    const mbps = (totalReceived * 8) / 1_000_000 / seconds;
     readout.innerHTML = `${mbps.toFixed(1)}<span class="unit">Mbps</span>`;
-    detail.textContent = `${(final.bytes / 1024).toFixed(0)} KB in ${final.seconds.toFixed(2)}s · second pass · ${perfNote(mbps)}`;
+    detail.textContent = `${(totalReceived / 1024 / 1024).toFixed(1)} MB across ${STREAMS} parallel streams in ${seconds.toFixed(2)}s · ${perfNote(mbps, 'down')}`;
     sub.textContent = '✓ done';
-    return { mbps, seconds: final.seconds, bytes: final.bytes };
+    return { mbps, seconds, bytes: totalReceived, streams: STREAMS };
   } catch (e) {
     readout.innerHTML = '<span class="bad">failed</span>';
     detail.textContent = e.message || 'speed test failed';
@@ -246,12 +269,111 @@ async function runSpeedTest() {
   }
 }
 
-function perfNote(mbps) {
-  if (mbps >= 50) return 'fast';
-  if (mbps >= 25) return 'good';
-  if (mbps >= 10) return 'ok';
-  if (mbps >= 5)  return 'slow';
+// ─── UPLOAD SPEED TEST ─────────────────────────────────────────────────────────
+async function runUploadTest() {
+  const fill = document.getElementById('uploadFill');
+  const readout = document.getElementById('uploadReadout');
+  const detail = document.getElementById('uploadDetail');
+  const sub = document.getElementById('uploadSub');
+
+  readout.innerHTML = '<span class="muted">testing…</span>';
+  sub.innerHTML = '<span class="spinner"></span> uploading';
+  fill.style.width = '0%';
+
+  const SIZE = 2 * 1024 * 1024; // 2 MB — within Vercel's request body limit
+  try {
+    const buf = new Uint8Array(SIZE);
+    // crypto.getRandomValues caps at 65536 bytes per call.
+    const CHUNK = 65536;
+    for (let off = 0; off < SIZE; off += CHUNK) {
+      crypto.getRandomValues(buf.subarray(off, Math.min(off + CHUNK, SIZE)));
+    }
+
+    fill.style.width = '20%';
+    const t0 = performance.now();
+    const resp = await fetch('/api/echo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    const t1 = performance.now();
+    fill.style.width = '100%';
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const j = await resp.json();
+    const seconds = (t1 - t0) / 1000;
+    const mbps = (SIZE * 8) / 1_000_000 / seconds;
+    readout.innerHTML = `${mbps.toFixed(1)}<span class="unit">Mbps</span>`;
+    detail.textContent = `${(SIZE / 1024 / 1024).toFixed(1)} MB POSTed in ${seconds.toFixed(2)}s · server ack ${j.bytes} bytes · ${perfNote(mbps, 'up')}`;
+    sub.textContent = '✓ done';
+    return { mbps, seconds, bytes: SIZE };
+  } catch (e) {
+    readout.innerHTML = '<span class="bad">failed</span>';
+    detail.textContent = e.message || 'upload test failed';
+    sub.innerHTML = '<span class="bad">✗ error</span>';
+    return null;
+  }
+}
+
+// ─── PING / LATENCY TEST ──────────────────────────────────────────────────────
+async function runPingTest() {
+  const readout = document.getElementById('pingReadout');
+  const detail = document.getElementById('pingDetail');
+  const sub = document.getElementById('pingSub');
+
+  readout.innerHTML = '<span class="muted">pinging…</span>';
+  sub.innerHTML = '<span class="spinner"></span> 10 round-trips';
+
+  const N = 10;
+  const samples = [];
+  try {
+    // Discard the first sample (cold start of /api/ping).
+    for (let i = 0; i < N + 1; i++) {
+      const t0 = performance.now();
+      const r = await fetch('/api/ping?_=' + Date.now() + '-' + i, { cache: 'no-store' });
+      await r.text();
+      const t1 = performance.now();
+      if (i > 0) samples.push(t1 - t0);
+    }
+    const sorted = samples.slice().sort((a,b)=>a-b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    const mean = samples.reduce((s,v)=>s+v,0) / samples.length;
+    const variance = samples.reduce((s,v)=>s + (v-mean)**2, 0) / samples.length;
+    const jitter = Math.sqrt(variance);
+
+    readout.innerHTML = `${median.toFixed(0)}<span class="unit">ms median</span>`;
+    detail.textContent = `n=${samples.length} · min ${min.toFixed(0)}ms · max ${max.toFixed(0)}ms · jitter ±${jitter.toFixed(0)}ms · ${pingNote(median, jitter)}`;
+    sub.textContent = '✓ done';
+    return { median, min, max, mean, jitter, samples };
+  } catch (e) {
+    readout.innerHTML = '<span class="bad">failed</span>';
+    detail.textContent = e.message || 'ping failed';
+    sub.innerHTML = '<span class="bad">✗ error</span>';
+    return null;
+  }
+}
+
+function perfNote(mbps, dir) {
+  // Direction-aware thresholds. Upload caps are typically lower than download.
+  const t = dir === 'up'
+    ? [{m: 30, l:'fast'}, {m: 15, l:'good'}, {m: 5, l:'ok'}, {m: 2, l:'slow'}]
+    : [{m: 50, l:'fast'}, {m: 25, l:'good'}, {m: 10, l:'ok'}, {m: 5, l:'slow'}];
+  for (const r of t) if (mbps >= r.m) return r.l;
   return 'very slow';
+}
+
+function pingNote(median, jitter) {
+  let n;
+  if (median < 30) n = 'excellent';
+  else if (median < 80) n = 'good';
+  else if (median < 150) n = 'ok';
+  else if (median < 300) n = 'high latency';
+  else n = 'very high latency';
+  if (jitter > 50) n += ' · unstable';
+  else if (jitter > 20) n += ' · some jitter';
+  return n;
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
@@ -311,9 +433,10 @@ async function runAll() {
     document.getElementById('networkSub').innerHTML = '<span class="bad">✗ error</span>';
   }
 
-  // Speed test — last (longest)
-  const speed = await runSpeedTest();
-  collected.speed = speed;
+  // Throughput + latency tests — run sequentially so they don't compete for bandwidth.
+  collected.speed  = await runSpeedTest();
+  collected.upload = await runUploadTest();
+  collected.ping   = await runPingTest();
 
   document.getElementById('rerunBtn').disabled = false;
 }
@@ -323,6 +446,8 @@ function buildReport() {
   const n = collected.network || {};
   const s = collected.system || {};
   const sp = collected.speed;
+  const up = collected.upload;
+  const pg = collected.ping;
   const lines = [
     '=== EgoDex System Check ===',
     'Generated: ' + new Date().toISOString(),
@@ -333,9 +458,13 @@ function buildReport() {
     'ASN:              ' + (n.asn || 'unknown'),
     'Location:         ' + [n.city, n.region, n.country].filter(Boolean).join(', '),
     'Connection type:  ' + (n.connectionType || 'unknown'),
-    'Reported downlink:' + (n.downlinkMbps != null ? n.downlinkMbps + ' Mbps' : ' unknown'),
-    'Reported RTT:     ' + (n.rttMs != null ? n.rttMs + ' ms' : 'unknown'),
-    'Measured speed:   ' + (sp ? sp.mbps.toFixed(1) + ' Mbps (' + (sp.bytes/1024).toFixed(0) + ' KB in ' + sp.seconds.toFixed(2) + 's)' : 'failed'),
+    '',
+    '— Connection performance —',
+    'Download (measured): ' + (sp ? sp.mbps.toFixed(1) + ' Mbps (' + (sp.bytes/1024/1024).toFixed(1) + ' MB / ' + sp.streams + ' streams / ' + sp.seconds.toFixed(2) + 's)' : 'failed'),
+    'Upload (measured):   ' + (up ? up.mbps.toFixed(1) + ' Mbps (' + (up.bytes/1024/1024).toFixed(1) + ' MB / ' + up.seconds.toFixed(2) + 's)' : 'failed'),
+    'Ping (median):       ' + (pg ? pg.median.toFixed(0) + ' ms' : 'failed'),
+    'Jitter:              ' + (pg ? '±' + pg.jitter.toFixed(0) + ' ms' : 'n/a'),
+    'Ping range:          ' + (pg ? pg.min.toFixed(0) + '–' + pg.max.toFixed(0) + ' ms (n=' + pg.samples.length + ')' : 'n/a'),
     '',
     '— System —',
     'OS:               ' + (s.os || '') + (s.osVersion ? ' ' + s.osVersion : ''),
