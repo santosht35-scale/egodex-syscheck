@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EgoDex · System Check</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f0f;--surface:#1a1a1a;--surface2:#222;--border:#2a2a2a;--border2:#333;
+  --text:#e8e8e8;--muted:#666;--muted2:#888;
+  --red:#ff4444;--amber:#f59e0b;--green:#22c55e;--blue:#3b82f6;--purple:#a78bfa;
+  --font-mono:'DM Mono',monospace;--font-sans:'DM Sans',sans-serif;
+}
+html,body{min-height:100%;}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);font-size:13px;padding:24px;line-height:1.5;}
+
+.wrap{max-width:780px;margin:0 auto;}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+.logo{font-family:var(--font-mono);font-size:11px;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;}
+.logo span{color:var(--text);}
+.actions{display:flex;gap:8px;}
+button.btn{cursor:pointer;font-family:var(--font-mono);padding:6px 12px;border:0.5px solid var(--border2);border-radius:4px;color:var(--muted2);background:var(--surface2);font-size:11px;transition:border-color .15s,color .15s;}
+button.btn:hover{border-color:#555;color:var(--text);}
+button.btn:disabled{opacity:.5;cursor:not-allowed;}
+button.primary{border-color:rgba(59,130,246,.4);color:var(--blue);}
+button.primary:hover{border-color:var(--blue);}
+
+.section{background:var(--surface);border:0.5px solid var(--border);border-radius:6px;margin-bottom:10px;overflow:hidden;}
+.sec-head{padding:9px 14px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.sec-title{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted2);}
+.sec-sub{font-family:var(--font-mono);font-size:10px;color:var(--muted);}
+
+.kv{display:grid;grid-template-columns:160px 1fr;gap:0;padding:0;}
+.kv .k,.kv .v{padding:7px 14px;border-bottom:0.5px solid var(--border);font-family:var(--font-mono);font-size:11px;}
+.kv .k{color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-size:10px;}
+.kv .v{color:var(--text);word-break:break-word;}
+.kv .k:nth-last-child(2),.kv .v:nth-last-child(1){border-bottom:none;}
+.muted{color:var(--muted);}
+.warn{color:var(--amber);}
+.good{color:var(--green);}
+.bad{color:var(--red);}
+
+.banner{padding:10px 14px;border-bottom:0.5px solid var(--border);font-family:var(--font-mono);font-size:11px;color:var(--muted2);display:flex;align-items:center;gap:8px;}
+.spinner{display:inline-block;width:10px;height:10px;border:1.5px solid var(--border2);border-top-color:var(--blue);border-radius:50%;animation:spin 0.8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+.speed-wrap{padding:14px;}
+.speed-bar{height:6px;background:var(--border2);border-radius:3px;margin:8px 0;overflow:hidden;}
+.speed-fill{height:100%;background:var(--blue);width:0;transition:width .2s ease;}
+.speed-readout{font-family:var(--font-mono);font-size:18px;font-weight:500;color:var(--text);}
+.speed-readout .unit{font-size:11px;color:var(--muted);margin-left:4px;}
+.speed-sub{font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-top:6px;}
+
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:8px 16px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:6px;font-family:var(--font-mono);font-size:11px;color:var(--text);opacity:0;transition:opacity .25s;pointer-events:none;}
+.toast.show{opacity:1;}
+
+@media (max-width:540px){
+  .kv{grid-template-columns:110px 1fr;}
+  body{padding:14px;font-size:12px;}
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="top">
+    <div class="logo">ego / <span>system check</span></div>
+    <div class="actions">
+      <button class="btn" id="rerunBtn" onclick="runAll()">↻ rerun</button>
+      <button class="btn primary" id="copyBtn" onclick="copyReport()">📋 copy report</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">network</span><span class="sec-sub" id="networkSub"><span class="spinner"></span> looking up...</span></div>
+    <div class="kv" id="networkKv"></div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">download speed test</span><span class="sec-sub" id="speedSub"></span></div>
+    <div class="speed-wrap">
+      <div class="speed-readout" id="speedReadout"><span class="muted">—</span><span class="unit">Mbps</span></div>
+      <div class="speed-bar"><div class="speed-fill" id="speedFill"></div></div>
+      <div class="speed-sub" id="speedDetail">queued · 2 MB blob over HTTPS to the Vercel server</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">system</span><span class="sec-sub" id="systemSub"></span></div>
+    <div class="kv" id="systemKv"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">copied to clipboard</div>
+
+<script>
+// ─── DETECTION ────────────────────────────────────────────────────────────────
+function parseUA(ua) {
+  // Lightweight parsing — gives "good enough" labels without an external lib.
+  const out = { browser: 'Unknown', browserVersion: '', os: 'Unknown', osVersion: '' };
+  let m;
+
+  if ((m = ua.match(/Edg\/([\d.]+)/)))         { out.browser='Edge';    out.browserVersion=m[1]; }
+  else if ((m = ua.match(/OPR\/([\d.]+)/)))    { out.browser='Opera';   out.browserVersion=m[1]; }
+  else if ((m = ua.match(/Chrome\/([\d.]+)/))) { out.browser='Chrome';  out.browserVersion=m[1]; }
+  else if ((m = ua.match(/Firefox\/([\d.]+)/))){ out.browser='Firefox'; out.browserVersion=m[1]; }
+  else if ((m = ua.match(/Version\/([\d.]+).*Safari/))){ out.browser='Safari'; out.browserVersion=m[1]; }
+
+  if (/Windows NT 10/.test(ua))         { out.os='Windows'; out.osVersion='10/11'; }
+  else if ((m = ua.match(/Windows NT ([\d.]+)/))){ out.os='Windows'; out.osVersion=m[1]; }
+  else if ((m = ua.match(/Mac OS X ([\d_]+)/))){ out.os='macOS'; out.osVersion=m[1].replace(/_/g,'.'); }
+  else if (/Android/.test(ua))          { out.os='Android'; const am=ua.match(/Android ([\d.]+)/); if(am) out.osVersion=am[1]; }
+  else if (/iPhone|iPad|iPod/.test(ua)) { out.os='iOS'; const im=ua.match(/OS ([\d_]+) like Mac/); if(im) out.osVersion=im[1].replace(/_/g,'.'); }
+  else if (/Linux/.test(ua))            { out.os='Linux'; }
+
+  return out;
+}
+
+function getGPU() {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) return null;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) {
+      return {
+        vendor: gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
+        renderer: gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL),
+      };
+    }
+    return { vendor: gl.getParameter(gl.VENDOR), renderer: gl.getParameter(gl.RENDERER) };
+  } catch (e) { return null; }
+}
+
+function renderKv(elId, pairs) {
+  const el = document.getElementById(elId);
+  el.innerHTML = pairs.map(([k, v]) => `
+    <div class="k">${escapeHtml(k)}</div>
+    <div class="v">${v == null || v === '' ? '<span class="muted">—</span>' : escapeHtml(String(v))}</div>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ─── DATA COLLECTION ──────────────────────────────────────────────────────────
+let collected = { network: {}, system: {}, speed: null };
+
+async function fetchIp() {
+  document.getElementById('networkSub').innerHTML = '<span class="spinner"></span> looking up...';
+  try {
+    const r = await fetch('/api/ip', { cache: 'no-store' });
+    const j = await r.json();
+    return { ok: true, data: j };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function detectSystem() {
+  const ua = navigator.userAgent || '';
+  const parsed = parseUA(ua);
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  const gpu = getGPU();
+
+  return {
+    ua,
+    os: parsed.os,
+    osVersion: parsed.osVersion,
+    browser: parsed.browser,
+    browserVersion: parsed.browserVersion,
+    platform: navigator.platform || '',
+    cpuCores: navigator.hardwareConcurrency || null,
+    ramGb: navigator.deviceMemory || null,
+    screen: `${screen.width} × ${screen.height}`,
+    dpr: window.devicePixelRatio || 1,
+    viewport: `${window.innerWidth} × ${window.innerHeight}`,
+    language: navigator.language,
+    languages: (navigator.languages || []).join(', '),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    cookiesEnabled: navigator.cookieEnabled,
+    online: navigator.onLine,
+    gpuVendor: gpu?.vendor || null,
+    gpuRenderer: gpu?.renderer || null,
+    connectionType: conn?.effectiveType || null,
+    connectionDownlinkMbps: conn?.downlink ?? null,
+    connectionRttMs: conn?.rtt ?? null,
+    connectionSaveData: conn?.saveData ?? null,
+  };
+}
+
+// ─── SPEED TEST ───────────────────────────────────────────────────────────────
+async function runSpeedTest() {
+  const fill = document.getElementById('speedFill');
+  const readout = document.getElementById('speedReadout');
+  const detail = document.getElementById('speedDetail');
+  const sub = document.getElementById('speedSub');
+
+  readout.innerHTML = '<span class="muted">testing…</span>';
+  sub.innerHTML = '<span class="spinner"></span> downloading';
+  fill.style.width = '0%';
+
+  const SIZE = 2 * 1024 * 1024;
+  const url = `/api/speedblob?sz=${SIZE}&_=${Date.now()}`;
+  const samples = [];
+
+  try {
+    // Two passes — first warms up TCP/CDN, second is the measurement.
+    for (let pass = 0; pass < 2; pass++) {
+      const t0 = performance.now();
+      const r = await fetch(url, { cache: 'no-store' });
+      const reader = r.body.getReader();
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.length;
+        const pct = Math.min(95, (received / SIZE) * 95);
+        if (pass === 1) fill.style.width = pct + '%';
+      }
+      const t1 = performance.now();
+      const seconds = (t1 - t0) / 1000;
+      const mbps = (received * 8) / 1_000_000 / seconds;
+      samples.push({ seconds, mbps, bytes: received });
+      if (pass === 1) fill.style.width = '100%';
+    }
+
+    const final = samples[1]; // ignore warm-up sample
+    const mbps = final.mbps;
+    readout.innerHTML = `${mbps.toFixed(1)}<span class="unit">Mbps</span>`;
+    detail.textContent = `${(final.bytes / 1024).toFixed(0)} KB in ${final.seconds.toFixed(2)}s · second pass · ${perfNote(mbps)}`;
+    sub.textContent = '✓ done';
+    return { mbps, seconds: final.seconds, bytes: final.bytes };
+  } catch (e) {
+    readout.innerHTML = '<span class="bad">failed</span>';
+    detail.textContent = e.message || 'speed test failed';
+    sub.innerHTML = '<span class="bad">✗ error</span>';
+    return null;
+  }
+}
+
+function perfNote(mbps) {
+  if (mbps >= 50) return 'fast';
+  if (mbps >= 25) return 'good';
+  if (mbps >= 10) return 'ok';
+  if (mbps >= 5)  return 'slow';
+  return 'very slow';
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────────────
+async function runAll() {
+  document.getElementById('rerunBtn').disabled = true;
+
+  // System info — instant
+  const sys = detectSystem();
+  collected.system = sys;
+  renderKv('systemKv', [
+    ['OS', sys.os + (sys.osVersion ? ' ' + sys.osVersion : '')],
+    ['Browser', sys.browser + (sys.browserVersion ? ' ' + sys.browserVersion : '')],
+    ['CPU cores', sys.cpuCores ? sys.cpuCores + ' logical' : 'unknown'],
+    ['RAM', sys.ramGb ? '~' + sys.ramGb + ' GB (browser estimate)' : 'unknown'],
+    ['GPU', sys.gpuRenderer ? sys.gpuRenderer + (sys.gpuVendor ? ' · ' + sys.gpuVendor : '') : 'unknown'],
+    ['Screen', sys.screen + ' @ ' + sys.dpr + 'x'],
+    ['Viewport', sys.viewport],
+    ['Platform', sys.platform || '—'],
+    ['Language', sys.language + (sys.languages && sys.languages !== sys.language ? ' (' + sys.languages + ')' : '')],
+    ['Timezone', sys.timezone],
+    ['User Agent', sys.ua],
+  ]);
+  document.getElementById('systemSub').textContent = sys.online ? 'online' : 'offline';
+
+  // Network info — server roundtrip
+  const ipRes = await fetchIp();
+  if (ipRes.ok) {
+    const j = ipRes.data;
+    const conn = navigator.connection;
+    collected.network = {
+      ip: j.ip || null,
+      isp: j.geo?.org || null,
+      asn: j.geo?.asn || null,
+      city: j.geo?.city || null,
+      region: j.geo?.region || null,
+      country: j.geo?.country || null,
+      postal: j.geo?.postal || null,
+      timezone: j.geo?.timezone || null,
+      connectionType: conn?.effectiveType || null,
+      downlinkMbps: conn?.downlink ?? null,
+      rttMs: conn?.rtt ?? null,
+    };
+    renderKv('networkKv', [
+      ['Public IP', j.ip || '—'],
+      ['ISP / org', j.geo?.org || 'unknown (geo lookup limited)'],
+      ['ASN', j.geo?.asn || '—'],
+      ['Location', [j.geo?.city, j.geo?.region, j.geo?.country].filter(Boolean).join(', ') || '—'],
+      ['Postal', j.geo?.postal || '—'],
+      ['Timezone (ISP)', j.geo?.timezone || '—'],
+      ['Connection type', conn?.effectiveType || 'unknown'],
+      ['Reported downlink', conn?.downlink != null ? conn.downlink + ' Mbps' : 'unknown'],
+      ['Reported RTT', conn?.rtt != null ? conn.rtt + ' ms' : 'unknown'],
+    ]);
+    document.getElementById('networkSub').textContent = '✓ done';
+  } else {
+    renderKv('networkKv', [['Error', ipRes.error || 'failed to look up IP/ISP']]);
+    document.getElementById('networkSub').innerHTML = '<span class="bad">✗ error</span>';
+  }
+
+  // Speed test — last (longest)
+  const speed = await runSpeedTest();
+  collected.speed = speed;
+
+  document.getElementById('rerunBtn').disabled = false;
+}
+
+// ─── COPY REPORT ──────────────────────────────────────────────────────────────
+function buildReport() {
+  const n = collected.network || {};
+  const s = collected.system || {};
+  const sp = collected.speed;
+  const lines = [
+    '=== EgoDex System Check ===',
+    'Generated: ' + new Date().toISOString(),
+    '',
+    '— Network —',
+    'Public IP:        ' + (n.ip || 'unknown'),
+    'ISP / org:        ' + (n.isp || 'unknown'),
+    'ASN:              ' + (n.asn || 'unknown'),
+    'Location:         ' + [n.city, n.region, n.country].filter(Boolean).join(', '),
+    'Connection type:  ' + (n.connectionType || 'unknown'),
+    'Reported downlink:' + (n.downlinkMbps != null ? n.downlinkMbps + ' Mbps' : ' unknown'),
+    'Reported RTT:     ' + (n.rttMs != null ? n.rttMs + ' ms' : 'unknown'),
+    'Measured speed:   ' + (sp ? sp.mbps.toFixed(1) + ' Mbps (' + (sp.bytes/1024).toFixed(0) + ' KB in ' + sp.seconds.toFixed(2) + 's)' : 'failed'),
+    '',
+    '— System —',
+    'OS:               ' + (s.os || '') + (s.osVersion ? ' ' + s.osVersion : ''),
+    'Browser:          ' + (s.browser || '') + (s.browserVersion ? ' ' + s.browserVersion : ''),
+    'CPU cores:        ' + (s.cpuCores || 'unknown'),
+    'RAM:              ' + (s.ramGb ? '~' + s.ramGb + ' GB' : 'unknown'),
+    'GPU:              ' + (s.gpuRenderer ? s.gpuRenderer + (s.gpuVendor ? ' / ' + s.gpuVendor : '') : 'unknown'),
+    'Screen:           ' + (s.screen || '') + ' @ ' + (s.dpr || 1) + 'x',
+    'Viewport:         ' + (s.viewport || ''),
+    'Platform:         ' + (s.platform || ''),
+    'Language:         ' + (s.language || ''),
+    'Timezone:         ' + (s.timezone || ''),
+    'User Agent:       ' + (s.ua || ''),
+  ];
+  return lines.join('\n');
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+async function copyReport() {
+  const text = buildReport();
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('copied to clipboard');
+  } catch (e) {
+    // Fallback for older browsers / iframes blocked from clipboard API
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); showToast('copied to clipboard'); }
+    catch (e2) { showToast('copy failed — select & copy manually'); }
+    ta.remove();
+  }
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+runAll();
+</script>
+</body>
+</html>
