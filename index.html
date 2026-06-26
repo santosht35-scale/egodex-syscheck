@@ -119,6 +119,14 @@ button.primary:hover{border-color:var(--blue);}
   </div>
 
   <div class="section">
+    <div class="sec-head"><span class="sec-title">machine readiness · ram &amp; storage</span><span class="sec-sub" id="readySub"></span></div>
+    <div class="speed-wrap">
+      <div class="speed-readout" id="readyReadout"><span class="muted">—</span></div>
+      <div class="speed-sub" id="readyRationale" style="margin-top:8px;line-height:1.7;">checking RAM and available disk space</div>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="sec-head"><span class="sec-title">system</span><span class="sec-sub" id="systemSub"></span></div>
     <div class="kv" id="systemKv"></div>
   </div>
@@ -182,7 +190,9 @@ function escapeHtml(s) {
 }
 
 // ─── DATA COLLECTION ──────────────────────────────────────────────────────────
-let collected = { network: {}, system: {}, speed: null, upload: null, ping: null, link: null };
+let collected = { network: {}, system: {}, speed: null, upload: null, ping: null, link: null, ready: null };
+// Target session size for collection — used to calibrate readiness thresholds.
+const SESSION_GB = 128;
 
 async function fetchIp() {
   document.getElementById('networkSub').innerHTML = '<span class="spinner"></span> looking up...';
@@ -390,6 +400,91 @@ function pingNote(median, jitter) {
   return n;
 }
 
+// ─── MACHINE READINESS (RAM + DISK) ───────────────────────────────────────────
+// Browsers cap navigator.deviceMemory at 8 GB (anti-fingerprinting) and don't
+// expose total/free disk directly. We approximate free disk via
+// navigator.storage.estimate() — on Chromium-based browsers the origin's quota
+// is typically ~60% of free disk. Noisy but reliable enough to separate
+// "tons of room" from "almost full".
+const QUOTA_TO_FREE_RATIO = 0.6;
+
+async function detectStorage() {
+  if (!navigator.storage || !navigator.storage.estimate) return null;
+  try {
+    const est = await navigator.storage.estimate();
+    return { quotaBytes: est.quota || 0, usageBytes: est.usage || 0 };
+  } catch (e) { return null; }
+}
+
+function inferReadiness(ramGb, storage) {
+  const reasons = [];
+  let ramCls, diskCls;
+
+  // RAM
+  if (!ramGb) {
+    reasons.push('RAM: not reported by this browser');
+    ramCls = null;
+  } else if (ramGb >= 8) {
+    reasons.push(`RAM: ≥${ramGb} GB — fine for sustained uploads (browser caps the reading at 8 GB)`);
+    ramCls = 'green';
+  } else if (ramGb >= 4) {
+    reasons.push(`RAM: ${ramGb} GB — tight, close other heavy apps during the upload`);
+    ramCls = 'amber';
+  } else {
+    reasons.push(`RAM: ${ramGb} GB — low, machine may struggle while uploading ${SESSION_GB} GB`);
+    ramCls = 'red';
+  }
+
+  // Disk
+  let quotaGb = null, freeDiskEstGb = null;
+  if (!storage || !storage.quotaBytes) {
+    reasons.push('Free disk: could not estimate (browser storage API unavailable)');
+    diskCls = null;
+  } else {
+    quotaGb = storage.quotaBytes / 1e9;
+    freeDiskEstGb = quotaGb / QUOTA_TO_FREE_RATIO;
+    if (freeDiskEstGb >= SESSION_GB * 1.5) {
+      reasons.push(`Free disk (est.): ~${freeDiskEstGb.toFixed(0)} GB — plenty for a ${SESSION_GB} GB session`);
+      diskCls = 'green';
+    } else if (freeDiskEstGb >= SESSION_GB * 1.1) {
+      reasons.push(`Free disk (est.): ~${freeDiskEstGb.toFixed(0)} GB — tight for ${SESSION_GB} GB, free up space first if possible`);
+      diskCls = 'amber';
+    } else {
+      reasons.push(`Free disk (est.): ~${freeDiskEstGb.toFixed(0)} GB — likely NOT enough for a ${SESSION_GB} GB session`);
+      diskCls = 'red';
+    }
+  }
+
+  // Overall verdict — worst of the two
+  const classes = [ramCls, diskCls].filter(Boolean);
+  let cls;
+  if (classes.includes('red')) cls = 'red';
+  else if (classes.includes('amber') || classes.length === 0) cls = 'amber';
+  else cls = 'green';
+
+  let verdict, headline;
+  if (cls === 'green') { verdict = `Ready for ${SESSION_GB} GB session`; headline = 'comfortable headroom'; }
+  else if (cls === 'amber') { verdict = 'Marginal — tight room'; headline = 'should work but verify free space before starting'; }
+  else { verdict = 'Likely insufficient'; headline = 'free up disk or use a different machine'; }
+
+  return { verdict, cls, headline, reasons, ramGb, quotaGb, freeDiskEstGb };
+}
+
+async function renderReadiness() {
+  const ramGb = navigator.deviceMemory || null;
+  const storage = await detectStorage();
+  const out = inferReadiness(ramGb, storage);
+  collected.ready = out;
+
+  const readout = document.getElementById('readyReadout');
+  const rat = document.getElementById('readyRationale');
+  const sub = document.getElementById('readySub');
+
+  readout.innerHTML = `<span class="verdict verdict-${out.cls}">${escapeHtml(out.verdict)}</span> <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-left:10px;">${escapeHtml(out.headline)}</span>`;
+  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul><div style="margin-top:8px;color:var(--muted);font-size:10px;">free disk is approximated from browser storage quota (≈ 60% of free disk on Chromium). RAM is rounded by the browser (capped at 8 GB).</div>`;
+  sub.textContent = '✓ checked';
+}
+
 // ─── LINK QUALITY INFERENCE ───────────────────────────────────────────────────
 // Browsers don't expose WiFi protocol (802.11ax/ac/etc.) or NIC info to JS.
 // We classify the *family* of link by the observed throughput / latency / jitter.
@@ -553,6 +648,8 @@ async function runAll() {
 
   // Derive link-quality verdict from the three measurements above.
   renderLinkInference();
+  // Independent of network — RAM + free-disk readiness for a 128 GB session.
+  await renderReadiness();
 
   document.getElementById('rerunBtn').disabled = false;
 }
@@ -586,6 +683,11 @@ function buildReport() {
     'Verdict:            ' + (collected.link?.verdict || 'unknown'),
     'Assessment:         ' + (collected.link?.headline || ''),
     ...(collected.link?.reasons || []).map(r => '  · ' + r),
+    '',
+    `— Machine readiness (${SESSION_GB} GB target session) —`,
+    'Verdict:            ' + (collected.ready?.verdict || 'unknown'),
+    'Assessment:         ' + (collected.ready?.headline || ''),
+    ...(collected.ready?.reasons || []).map(r => '  · ' + r),
     '',
     '— System —',
     'OS:               ' + (s.os || '') + (s.osVersion ? ' ' + s.osVersion : ''),
