@@ -52,6 +52,12 @@ button.primary:hover{border-color:var(--blue);}
 .speed-readout{font-family:var(--font-mono);font-size:18px;font-weight:500;color:var(--text);}
 .speed-readout .unit{font-size:11px;color:var(--muted);margin-left:4px;}
 .speed-sub{font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-top:6px;}
+.verdict{display:inline-flex;align-items:center;font-family:var(--font-mono);font-size:11px;padding:3px 10px;border-radius:3px;letter-spacing:.02em;}
+.verdict-green{background:rgba(34,197,94,0.10);color:var(--green);border:0.5px solid rgba(34,197,94,.3);}
+.verdict-amber{background:rgba(245,158,11,0.10);color:var(--amber);border:0.5px solid rgba(245,158,11,.3);}
+.verdict-red  {background:rgba(255,68,68,0.10);color:var(--red);border:0.5px solid rgba(255,68,68,.3);}
+.rationale-list{font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-top:8px;}
+.rationale-list li{margin-left:14px;line-height:1.8;}
 
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:8px 16px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:6px;font-family:var(--font-mono);font-size:11px;color:var(--text);opacity:0;transition:opacity .25s;pointer-events:none;}
 .toast.show{opacity:1;}
@@ -101,6 +107,14 @@ button.primary:hover{border-color:var(--blue);}
     <div class="speed-wrap">
       <div class="speed-readout" id="pingReadout"><span class="muted">—</span><span class="unit">ms</span></div>
       <div class="speed-sub" id="pingDetail">queued · 10 small round-trips, median + jitter</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="sec-head"><span class="sec-title">link quality · inferred</span><span class="sec-sub" id="linkSub">waiting for measurements</span></div>
+    <div class="speed-wrap">
+      <div class="speed-readout" id="linkReadout"><span class="muted">—</span></div>
+      <div class="speed-sub" id="linkRationale" style="margin-top:8px;line-height:1.7;">browsers don't expose WiFi version or NIC info, so we infer link family from measured throughput + latency + jitter</div>
     </div>
   </div>
 
@@ -168,7 +182,7 @@ function escapeHtml(s) {
 }
 
 // ─── DATA COLLECTION ──────────────────────────────────────────────────────────
-let collected = { network: {}, system: {}, speed: null, upload: null, ping: null };
+let collected = { network: {}, system: {}, speed: null, upload: null, ping: null, link: null };
 
 async function fetchIp() {
   document.getElementById('networkSub').innerHTML = '<span class="spinner"></span> looking up...';
@@ -376,6 +390,105 @@ function pingNote(median, jitter) {
   return n;
 }
 
+// ─── LINK QUALITY INFERENCE ───────────────────────────────────────────────────
+// Browsers don't expose WiFi protocol (802.11ax/ac/etc.) or NIC info to JS.
+// We classify the *family* of link by the observed throughput / latency / jitter.
+// This is heuristic — meant to separate "wired/fast WiFi" from "weak WiFi/cellular".
+function inferLink(speed, upload, ping, browserConn) {
+  if (!speed && !upload && !ping) {
+    return { verdict: 'unknown', cls: 'amber', headline: 'not enough data', reasons: ['all three measurements failed'] };
+  }
+  const dl  = speed?.mbps  ?? 0;
+  const ul  = upload?.mbps ?? 0;
+  const rtt = ping?.median ?? 999;
+  const jit = ping?.jitter ?? 999;
+  const reasons = [];
+  let verdict, cls, headline;
+
+  // Top tier: wired ethernet or WiFi 6/6E within close range
+  if (dl >= 400 && ul >= 30 && rtt < 35 && jit < 15) {
+    verdict = 'Likely wired ethernet or WiFi 6 / 6E';
+    cls = 'green';
+    headline = 'excellent for v3 collection';
+    reasons.push(`download ${dl.toFixed(0)} Mbps · upload ${ul.toFixed(0)} Mbps — top-tier sustained throughput`);
+    reasons.push(`ping ${rtt.toFixed(0)} ms · jitter ±${jit.toFixed(0)} ms — very stable`);
+  }
+  // Solid WiFi 5 / mid-tier wired
+  else if (dl >= 150 && ul >= 15 && rtt < 60 && jit < 30) {
+    verdict = 'Likely WiFi 5 (802.11ac) or modern broadband';
+    cls = 'green';
+    headline = 'good for v3 collection';
+    reasons.push(`download ${dl.toFixed(0)} Mbps · upload ${ul.toFixed(0)} Mbps — strong throughput`);
+    reasons.push(`ping ${rtt.toFixed(0)} ms · jitter ±${jit.toFixed(0)} ms — stable connection`);
+  }
+  // Decent broadband — WiFi 4 / older WiFi 5 / capped plan
+  else if (dl >= 40 && ul >= 5 && rtt < 100 && jit < 50) {
+    verdict = 'WiFi 4 (802.11n) or older / capped broadband';
+    cls = 'amber';
+    headline = 'workable but not ideal';
+    reasons.push(`download ${dl.toFixed(0)} Mbps · upload ${ul.toFixed(0)} Mbps — sufficient but not great`);
+    if (rtt >= 60) reasons.push(`ping ${rtt.toFixed(0)} ms — moderate latency`);
+    if (jit >= 30) reasons.push(`jitter ±${jit.toFixed(0)} ms — some variance`);
+  }
+  // Cellular / weak WiFi — high jitter is the tell
+  else if (jit >= 50 || rtt >= 150) {
+    verdict = 'Possibly cellular, weak WiFi, or shared/congested link';
+    cls = 'red';
+    headline = 'may struggle with sustained uploads';
+    if (rtt >= 150) reasons.push(`ping ${rtt.toFixed(0)} ms — high latency`);
+    if (jit >= 50)  reasons.push(`jitter ±${jit.toFixed(0)} ms — unstable`);
+    if (ul < 5)     reasons.push(`upload ${ul.toFixed(1)} Mbps — low ceiling for video uploads`);
+    if (dl < 25)    reasons.push(`download ${dl.toFixed(1)} Mbps — slow`);
+  }
+  // Slow link
+  else if (dl < 25 || ul < 3) {
+    verdict = 'Slow broadband or heavily congested link';
+    cls = 'red';
+    headline = 'likely problematic for v3 collection';
+    reasons.push(`download ${dl.toFixed(1)} Mbps · upload ${ul.toFixed(1)} Mbps — below recommended for video uploads`);
+    if (rtt >= 100) reasons.push(`ping ${rtt.toFixed(0)} ms — also high latency`);
+  }
+  // Mid-range, no red flags
+  else {
+    verdict = 'Mid-range broadband, unclear link type';
+    cls = 'amber';
+    headline = 'should work, monitor uploads';
+    reasons.push(`download ${dl.toFixed(0)} Mbps · upload ${ul.toFixed(0)} Mbps`);
+    reasons.push(`ping ${rtt.toFixed(0)} ms · jitter ±${jit.toFixed(0)} ms`);
+  }
+
+  // Augment with browser-reported hints when available — usually unreliable on
+  // desktop but worth surfacing on mobile or when explicitly "cellular".
+  if (browserConn) {
+    if (browserConn.connectionType === 'cellular') {
+      reasons.push('browser reports cellular connection');
+    } else if (browserConn.connectionType === 'wifi') {
+      reasons.push('browser reports wifi connection (type only — no protocol)');
+    } else if (browserConn.connectionType === 'ethernet') {
+      reasons.push('browser reports ethernet connection');
+    }
+  }
+
+  return { verdict, cls, headline, reasons };
+}
+
+function renderLinkInference() {
+  const readout = document.getElementById('linkReadout');
+  const rat = document.getElementById('linkRationale');
+  const sub = document.getElementById('linkSub');
+  const browserConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  const browserHint = browserConn ? {
+    connectionType: browserConn.type || null,
+    effectiveType: browserConn.effectiveType || null,
+  } : null;
+  const out = inferLink(collected.speed, collected.upload, collected.ping, browserHint);
+  collected.link = out;
+
+  readout.innerHTML = `<span class="verdict verdict-${out.cls}">${escapeHtml(out.verdict)}</span> <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-left:10px;">${escapeHtml(out.headline)}</span>`;
+  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul><div style="margin-top:8px;color:var(--muted);font-size:10px;">heuristic only — browsers cannot expose 802.11 protocol or NIC details</div>`;
+  sub.textContent = '✓ inferred';
+}
+
 // ─── RENDER ──────────────────────────────────────────────────────────────────
 async function runAll() {
   document.getElementById('rerunBtn').disabled = true;
@@ -438,6 +551,9 @@ async function runAll() {
   collected.upload = await runUploadTest();
   collected.ping   = await runPingTest();
 
+  // Derive link-quality verdict from the three measurements above.
+  renderLinkInference();
+
   document.getElementById('rerunBtn').disabled = false;
 }
 
@@ -465,6 +581,11 @@ function buildReport() {
     'Ping (median):       ' + (pg ? pg.median.toFixed(0) + ' ms' : 'failed'),
     'Jitter:              ' + (pg ? '±' + pg.jitter.toFixed(0) + ' ms' : 'n/a'),
     'Ping range:          ' + (pg ? pg.min.toFixed(0) + '–' + pg.max.toFixed(0) + ' ms (n=' + pg.samples.length + ')' : 'n/a'),
+    '',
+    '— Link quality (inferred) —',
+    'Verdict:            ' + (collected.link?.verdict || 'unknown'),
+    'Assessment:         ' + (collected.link?.headline || ''),
+    ...(collected.link?.reasons || []).map(r => '  · ' + r),
     '',
     '— System —',
     'OS:               ' + (s.os || '') + (s.osVersion ? ' ' + s.osVersion : ''),
