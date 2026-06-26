@@ -58,6 +58,9 @@ button.primary:hover{border-color:var(--blue);}
 .verdict-red  {background:rgba(255,68,68,0.10);color:var(--red);border:0.5px solid rgba(255,68,68,.3);}
 .rationale-list{font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-top:8px;}
 .rationale-list li{margin-left:14px;line-height:1.8;}
+.thresh-box{margin-top:10px;padding:8px 10px;border:0.5px dashed var(--border2);border-radius:4px;font-family:var(--font-mono);font-size:10px;color:var(--muted2);line-height:1.8;}
+.thresh-box .thresh-h{color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:9px;margin-bottom:4px;}
+.thresh-tag{display:inline-block;padding:0 5px;border-radius:2px;margin-right:6px;min-width:42px;text-align:center;font-size:9px;}
 
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:8px 16px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:6px;font-family:var(--font-mono);font-size:11px;color:var(--text);opacity:0;transition:opacity .25s;pointer-events:none;}
 .toast.show{opacity:1;}
@@ -72,7 +75,10 @@ button.primary:hover{border-color:var(--blue);}
 
 <div class="wrap">
   <div class="top">
-    <div class="logo">ego / <span>system check</span></div>
+    <div>
+      <div class="logo">ego / <span>system check</span></div>
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-top:4px;letter-spacing:.04em;">data snapshot — verdicts are heuristic, not pass/fail gates</div>
+    </div>
     <div class="actions">
       <button class="btn" id="rerunBtn" onclick="runAll()">↻ rerun</button>
       <button class="btn primary" id="copyBtn" onclick="copyReport()">📋 copy report</button>
@@ -481,7 +487,15 @@ async function renderReadiness() {
   const sub = document.getElementById('readySub');
 
   readout.innerHTML = `<span class="verdict verdict-${out.cls}">${escapeHtml(out.verdict)}</span> <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-left:10px;">${escapeHtml(out.headline)}</span>`;
-  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul><div style="margin-top:8px;color:var(--muted);font-size:10px;">free disk is approximated from browser storage quota (≈ 60% of free disk on Chromium). RAM is rounded by the browser (capped at 8 GB).</div>`;
+  const thresh = `
+    <div class="thresh-box">
+      <div class="thresh-h">thresholds (target session: ${SESSION_GB} GB)</div>
+      <div><span class="verdict verdict-green thresh-tag">green</span> RAM ≥ 8 GB · free disk (est.) ≥ ${(SESSION_GB * 1.5).toFixed(0)} GB</div>
+      <div><span class="verdict verdict-amber thresh-tag">amber</span> RAM ≥ 4 GB · free disk (est.) ≥ ${(SESSION_GB * 1.1).toFixed(0)} GB</div>
+      <div><span class="verdict verdict-red thresh-tag">red</span> below either</div>
+    </div>
+  `;
+  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>${thresh}<div style="margin-top:8px;color:var(--muted);font-size:10px;">free disk is approximated from browser storage quota (≈ 60% of free disk on Chromium). RAM is rounded by the browser (capped at 8 GB). this is a data point, not a gate.</div>`;
   sub.textContent = '✓ checked';
 }
 
@@ -580,7 +594,17 @@ function renderLinkInference() {
   collected.link = out;
 
   readout.innerHTML = `<span class="verdict verdict-${out.cls}">${escapeHtml(out.verdict)}</span> <span style="font-family:var(--font-mono);font-size:11px;color:var(--muted2);margin-left:10px;">${escapeHtml(out.headline)}</span>`;
-  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul><div style="margin-top:8px;color:var(--muted);font-size:10px;">heuristic only — browsers cannot expose 802.11 protocol or NIC details</div>`;
+  const thresh = `
+    <div class="thresh-box">
+      <div class="thresh-h">classification thresholds</div>
+      <div><span class="verdict verdict-green thresh-tag">green</span> wired or WiFi 6/6E: dl ≥ 400 Mbps · ul ≥ 30 · ping &lt; 35ms · jitter &lt; 15ms</div>
+      <div><span class="verdict verdict-green thresh-tag">green</span> WiFi 5 / modern broadband: dl ≥ 150 Mbps · ul ≥ 15 · ping &lt; 60ms · jitter &lt; 30ms</div>
+      <div><span class="verdict verdict-amber thresh-tag">amber</span> WiFi 4 / older / capped: dl ≥ 40 Mbps · ul ≥ 5 · ping &lt; 100ms · jitter &lt; 50ms</div>
+      <div><span class="verdict verdict-red thresh-tag">red</span> jitter ≥ 50ms OR ping ≥ 150ms (cellular / weak WiFi / shared link)</div>
+      <div><span class="verdict verdict-red thresh-tag">red</span> dl &lt; 25 Mbps OR ul &lt; 3 Mbps (slow broadband)</div>
+    </div>
+  `;
+  rat.innerHTML = `<ul class="rationale-list">${out.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>${thresh}<div style="margin-top:8px;color:var(--muted);font-size:10px;">heuristic only — browsers cannot expose 802.11 protocol or NIC details. this is a data point, not a gate.</div>`;
   sub.textContent = '✓ inferred';
 }
 
